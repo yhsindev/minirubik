@@ -14,7 +14,8 @@ enum {
     CUBIES = 7,
     PERMUTATIONS = 5040,
     ORIENTATIONS = 729,
-    UNVISITED = 0xFF
+    UNVISITED = 0xFF,
+    STATES = PERMUTATIONS * ORIENTATIONS, /* 3,674,160 */
 };
 
 typedef struct {
@@ -257,11 +258,144 @@ static void parse(const char *s, int *p, int *o)
     *o = (int) (full % ORIENTATIONS);
 }
 
-int main(void)
+/* ---- Step3: Self test (host only) ------------------------------------------ */
+
+static uint8_t exact[STATES];        /* exact distance of every state, 3.5 MB */
+static uint32_t full_queue[STATES];  /* BFS queue for exact[], 14.7 MB */
+
+/* Apply path[0..len-1] to (p, o).  Returns 1 if it reaches the solved state. */
+static int path_solves(int p, int o, int len)
+{
+    /* Apply the moves in path[] to (p, o) with the move tables
+    *  and check that you reach (0, 0).  Print OK or FAIL. */
+    int np = p, no = o;
+    for(int i = 0; i < len; i++) {
+        int face = path[i] / 3;
+        int turn = path[i] % 3;
+        for(int j = 0; j <= turn; j++) {
+            np = perm_move[face * PERMUTATIONS + np];
+            no = ori_move[face * ORIENTATIONS + no];
+        }
+    }
+    return np == 0 && no == 0;
+}
+
+/* Print a state as its 14-digit input string, e.g. 21345671111111. */
+static void print_state(uint32_t rank)
+{
+    state_t st;
+    unrank_state(rank, &st);
+    /* Print st.p[i] + 1 for i < 7, then st.o[i] + 1 for i < 7. */
+    for(int i = 0; i < 7; i++) {
+        printf("%d", st.p[i] + 1);
+    }
+    for(int i = 0; i < 7; i++) {
+        printf("%d", st.o[i] + 1);
+    }
+    printf("\n");
+}
+
+/* Exact distance of every state: the same BFS as bfs(), but on full ranks.
+ * A full rank is p * ORIENTATIONS + o.  Returns the number of states reached. */
+static uint32_t build_exact(void)
+{
+    uint32_t head = 0, tail = 0;
+    /* Mark every entry of exact[] UNVISITED, set exact[0] = 0,
+     * Put 0 into full_queue. */
+    for(int i = 0; i < STATES; i++) {
+        exact[i] = UNVISITED;
+    }
+    exact[0] = 0;
+    full_queue[0] = 0;
+    tail = 1;
+    while (head < tail) {
+        uint32_t r = full_queue[head++];
+        int p = (int) (r / ORIENTATIONS), o = (int) (r % ORIENTATIONS);
+        for (int face = 0; face < 3; ++face) {
+            int np = p, no = o;
+            for (int turn = 0; turn < 3; ++turn) {
+                np = perm_move[face * PERMUTATIONS + np];
+                no = ori_move[face * ORIENTATIONS + no];
+                /* Combine np and no into a full rank. 
+                 * If it is unvisited, give it exact[r] + 1 and enqueue it. */
+                uint32_t full_rank = (uint32_t) np * ORIENTATIONS + no;
+                if(exact[full_rank] == UNVISITED) { 
+                    exact[full_rank] = exact[r] + 1;
+                    full_queue[tail++] = full_rank;
+                }
+            }
+        }
+    }
+    return tail;
+}
+
+/* Gates H1 and H3, plus the cost of the distance-11 states.
+ * Returns 0 when every check passes. */
+static int self_test(void)
+{
+    uint32_t reached = build_exact();
+    /* Print reached (expect 3,674,160). */
+    printf("Reached: %u\n", reached);
+    
+    /* H1: the lower bound never exceeds the exact distance. */
+    unsigned long h1_fail = 0;
+    for (uint32_t r = 0; r < STATES; ++r) {
+        int p = (int) (r / ORIENTATIONS), o = (int) (r % ORIENTATIONS);
+        /*  Count the states where h(p, o) > exact[r]. */
+        if(h(p, o) > exact[r]) {
+            h1_fail++;
+        }
+    }
+    printf("H1: %lu violations\n", h1_fail);
+
+    /* H3: IDA* finds a path of exactly the exact length, and the path
+     * really solves the state.  Also measure the distance-11 states. */
+    unsigned long h3_fail = 0, count11 = 0;
+    unsigned long most = 0, fewest = (unsigned long) -1;
+    uint32_t hardest = 0;
+    for (uint32_t r = 0; r < STATES; ++r) {
+        int p = (int) (r / ORIENTATIONS), o = (int) (r % ORIENTATIONS);
+        nodes = 0;
+        int len = solve(p, o);
+        /*  Count a failure if len != exact[r],
+         *  or if path_solves(p, o, len) is 0. */
+        if(len != exact[r] || !path_solves(p, o, len)) {
+            h3_fail++;
+        }
+        /*  If exact[r] == 11: add 1 to count11,
+         *  keep the smallest node count in fewest,
+         *  and keep the largest in most together with its rank in hardest. */
+        if(exact[r] == 11) {
+            count11++;
+            if(nodes < fewest) {
+                fewest = nodes;
+            }
+            if(nodes > most) {
+                most = nodes;
+                hardest = r;
+            }
+        }
+        if (r % 500000 == 0)
+            fprintf(stderr, "  progress %u / %d\n", r, STATES);
+    }
+    printf("H3: %lu failures\n", h3_fail);
+    /*  Print count11 (expect 2,644), fewest, most,
+     *  and the hardest state with print_state(hardest). */
+    printf("Dist-11: %lu, fewest %lu, most %lu\n", count11, fewest, most);
+    printf("Hardest state: ");
+    print_state(hardest);
+    return (reached != STATES || h1_fail || h3_fail) ? 1 : 0;
+}
+
+int main(int argc, char **argv)
 {
     build_move_tables();
     int rp = bfs(perm_move, PERMUTATIONS, perm_dist);
     int ro = bfs(ori_move, ORIENTATIONS, ori_dist);
+
+    if(argc == 2 && !strcmp(argv[1], "--self-test")) {
+        return self_test();
+    }
     report("permutation", perm_dist, PERMUTATIONS, rp);
     report("orientation", ori_dist, ORIENTATIONS, ro);
 
@@ -290,23 +424,9 @@ int main(void)
         for(int k = 0; k < len; k++) {
             printf("%s ", move_names[path[k]]);
         }
+        printf("%s\n", path_solves(p, o, len) ? "OK" : "FAIL");
         printf("\n");
-        /*  Apply the moves in path[] to (p, o) with the move tables
-         *         and check that you reach (0, 0).  Print OK or FAIL. */
-        int np = p, no = o;
-        for(int i = 0; i < len; i++) {
-            int face = path[i] / 3;
-            int turn = path[i] % 3;
-            for(int j = 0; j <= turn; j++) {
-                np = perm_move[face * PERMUTATIONS + np];
-                no = ori_move[face * ORIENTATIONS + no];
-            }
-        }
-        if(np == 0 && no == 0) {
-            printf("OK\n");
-        } else {
-            printf("FAIL\n");
-        }
+        
     }
     return 0;
 }
