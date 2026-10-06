@@ -174,7 +174,7 @@ static void report(const char *name, const uint8_t *dist, int n, int reached)
         }
     }
     printf("%s: %d/%d, dist[0] = %d, max = %d\n", name, reached, n, dist[0], max);
-    }
+}
 
 /* ---- Step2: IDA* ----------- */
 enum { MAX_DEPTH = 11, NO_FACE = 3 };
@@ -185,6 +185,15 @@ static const char *const move_names[9] = {
 
 static uint8_t path[MAX_DEPTH];   /* path[g] = move made at depth g (0..8) */
 static unsigned long nodes;       /* number of dfs() calls */
+static unsigned long pruned;      /* calls that stopped at the bound check */
+static unsigned long expanded;    /* calls that went on to try moves */
+
+static void reset_counters(void)
+{
+    nodes = 0;
+    pruned = 0;
+    expanded = 0;
+}
 
 /* Lower bound on the moves left from (p, o). */
 static int h(int p, int o)
@@ -207,8 +216,10 @@ static int dfs(int p, int o, int g, int bound, int last_face)
     }
     /* If g + h(p, o) > bound, return 0 (prune). */
     if (g + h(p, o) > bound) {
+        pruned++;
         return 0;
     }
+    expanded++;
     for (int face = 0; face < 3; ++face) {
         /* Skip this face if it is last_face. */
         if(face == last_face) {
@@ -266,8 +277,6 @@ static uint32_t full_queue[STATES];  /* BFS queue for exact[], 14.7 MB */
 /* Apply path[0..len-1] to (p, o).  Returns 1 if it reaches the solved state. */
 static int path_solves(int p, int o, int len)
 {
-    /* Apply the moves in path[] to (p, o) with the move tables
-    *  and check that you reach (0, 0).  Print OK or FAIL. */
     int np = p, no = o;
     for(int i = 0; i < len; i++) {
         int face = path[i] / 3;
@@ -355,7 +364,7 @@ static int self_test(void)
     uint32_t hardest = 0;
     for (uint32_t r = 0; r < STATES; ++r) {
         int p = (int) (r / ORIENTATIONS), o = (int) (r % ORIENTATIONS);
-        nodes = 0;
+        reset_counters();
         int len = solve(p, o);
         /*  Count a failure if len != exact[r],
          *  or if path_solves(p, o, len) is 0. */
@@ -384,6 +393,18 @@ static int self_test(void)
     printf("Dist-11: %lu, fewest %lu, most %lu\n", count11, fewest, most);
     printf("Hardest state: ");
     print_state(hardest);
+    int hp = (int)(hardest / ORIENTATIONS), ho = (int)(hardest % ORIENTATIONS);
+    reset_counters();
+    int hlen = solve(hp, ho);
+    /* Solve the hardest state again and split its calls into pruned and expanded. */
+    printf("Breakdown: first bound %d, length %d, nodes %lu, pruned %lu, expanded %lu\n",
+           h(hp, ho), hlen, nodes, pruned, expanded);
+    printf("pruned + expanded + 1 == nodes: %s\n",
+           (pruned + expanded + 1 == nodes) ? "yes" : "no");
+    printf("Moves: ");
+    for (int i = 0; i < hlen; i++) {
+        printf("%s ", move_names[path[i]]);
+    }
     return (reached != STATES || h1_fail || h3_fail) ? 1 : 0;
 }
 
@@ -416,7 +437,7 @@ int main(int argc, char **argv)
     for (int t = 0; t < 8; ++t) {
         int p, o;
         parse(tests[t], &p, &o);
-        nodes = 0;
+        reset_counters();
         int len = solve(p, o);
         /*  Print the state, len, expect[t], nodes and the moves
          *         (move_names[path[i]] for i < len). */
