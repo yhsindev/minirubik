@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 enum {
     CUBIES = 7,
@@ -213,6 +214,9 @@ static int search(int p0, int o0, int bound)
 {
     int P[MAX_DEPTH + 1], O[MAX_DEPTH + 1];
     int F[MAX_DEPTH + 1], T[MAX_DEPTH + 1];
+    /* PB[g] == F[g] * PERMUTATIONS and OB[g] == F[g] * ORIENTATIONS at all
+     * times, kept up to date with additions instead of multiplies. */
+    int PB[MAX_DEPTH + 1], OB[MAX_DEPTH + 1];
     int g = 0;
     P[0] = p0;
     O[0] = o0;
@@ -231,9 +235,15 @@ enter:      /* a new node at depth g: the same three cases as in dfs() */
     }
     expanded++;
     F[g] = -1;                      /* no face tried yet */
+    PB[g] = -PERMUTATIONS;          /* TODO M1: PB[g] and OB[g] for face -1. */
+    OB[g] = -ORIENTATIONS;
+
 
 next_face:  /* the next face at depth g */
     F[g]++;
+    /* F[g] went up by one, so add one stride to PB[g] and OB[g]. */
+    PB[g] += PERMUTATIONS;
+    OB[g] += ORIENTATIONS;
     /* Skip the face of the previous move.
      * It is F[g - 1],and there is none when g == 0. */
     if (g > 0 && F[g] == F[g - 1]) {
@@ -244,10 +254,12 @@ next_face:  /* the next face at depth g */
         goto back;
     }
     T[g] = 0;
+    /* indexed with PB[g] and OB[g] 
+     * instead of F[g] * PERMUTATIONS and F[g] * ORIENTATIONS. */
     /* first quarter turn of face F[g],
      * starting from the node itself (P[g], O[g]); store the result in P[g + 1], O[g + 1]. */
-    P[g + 1] = perm_move[F[g] * PERMUTATIONS + P[g]];
-    O[g + 1] = ori_move[F[g] * ORIENTATIONS + O[g]];
+    P[g + 1] = perm_move[PB[g] + P[g]];
+    O[g + 1] = ori_move[OB[g] + O[g]];
     goto child;
 
 next_turn:  /* one more quarter turn of the same face */
@@ -258,11 +270,14 @@ next_turn:  /* one more quarter turn of the same face */
     }
     /* One more quarter turn of face F[g],
      * starting from the previous child (P[g + 1], O[g + 1]). */
-    P[g + 1] = perm_move[F[g] * PERMUTATIONS + P[g + 1]];
-    O[g + 1] = ori_move[F[g] * ORIENTATIONS + O[g + 1]];
+    P[g + 1] = perm_move[PB[g] + P[g + 1]];
+    O[g + 1] = ori_move[OB[g] + O[g + 1]];
 
 child:      /* record the move and go one level deeper */
-    path[g] = (uint8_t) (F[g] * 3 + T[g]);
+    /* path[g] = 3 * F[g] + T[g], using a shift and an add. */
+    path[g] = (uint8_t) ((F[g] << 1) + F[g] + T[g]);
+    assert(PB[g] == F[g] * PERMUTATIONS);
+    assert(OB[g] == F[g] * ORIENTATIONS);
     /* g++ and goto enter. */
     g++;
     goto enter;
