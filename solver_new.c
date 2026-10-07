@@ -204,51 +204,91 @@ static int h(int p, int o)
     return (perm > ori) ? perm : ori;
 }
 
-/* Search below (p, o).  g: moves made so far.  bound: limit of this
- * iteration.  last_face: face of the previous move, NO_FACE at the root.
+/* Iterative search(): the recursion becomes an explicit stack.
+ * At depth g:  P[g], O[g]  state of the node
+ *              F[g], T[g]  face and turn of the move being tried
+ * The child of depth g lives in P[g + 1], O[g + 1].
  * Returns 1 when it reaches the solved state; the moves are in path[0..g-1]. */
-static int dfs(int p, int o, int g, int bound, int last_face)
+static int search(int p0, int o0, int bound)
 {
+    int P[MAX_DEPTH + 1], O[MAX_DEPTH + 1];
+    int F[MAX_DEPTH + 1], T[MAX_DEPTH + 1];
+    int g = 0;
+    P[0] = p0;
+    O[0] = o0;
+
+enter:      /* a new node at depth g: the same three cases as in dfs() */
     nodes++;
-    /* If (p, o) is the solved state, return 1. */
-    if (p == 0 && o == 0) {
+    /* If (P[g], O[g]) is solved, return 1. */
+    if (P[g] == 0 && O[g] == 0) {
         return 1;
     }
-    /* If g + h(p, o) > bound, return 0 (prune). */
-    if (g + h(p, o) > bound) {
+    /* If g + h(P[g], O[g]) > bound,
+     * count it as pruned and goto back. */
+    if (g + h(P[g], O[g]) > bound) {
         pruned++;
-        return 0;
+        goto back;
     }
     expanded++;
-    for (int face = 0; face < 3; ++face) {
-        /* Skip this face if it is last_face. */
-        if(face == last_face) {
-            continue;
-        }
-        int np = p, no = o;
-        for (int turn = 0; turn < 3; ++turn) {
-            np = perm_move[face * PERMUTATIONS + np];
-            no = ori_move[face * ORIENTATIONS + no];
-            /* Store this move in path[g], then search one level deeper.  
-             * If that finds the solved state, return 1. */
-            path[g] = face * 3 + turn;
-            if (dfs(np, no, g + 1, bound, face)) {
-                return 1;
-            }
-        }
+    F[g] = -1;                      /* no face tried yet */
+
+next_face:  /* the next face at depth g */
+    F[g]++;
+    /* Skip the face of the previous move.
+     * It is F[g - 1],and there is none when g == 0. */
+    if (g > 0 && F[g] == F[g - 1]) {
+        goto next_face;
     }
-    return 0;
+    /* If F[g] == 3, every face is done: goto back. */
+    if(F[g] == 3){
+        goto back;
+    }
+    T[g] = 0;
+    /* first quarter turn of face F[g],
+     * starting from the node itself (P[g], O[g]); store the result in P[g + 1], O[g + 1]. */
+    P[g + 1] = perm_move[F[g] * PERMUTATIONS + P[g]];
+    O[g + 1] = ori_move[F[g] * ORIENTATIONS + O[g]];
+    goto child;
+
+next_turn:  /* one more quarter turn of the same face */
+    T[g]++;
+    /* If T[g] == 3, this face is done: goto next_face. */
+    if(T[g] == 3){
+        goto next_face;
+    }
+    /* One more quarter turn of face F[g],
+     * starting from the previous child (P[g + 1], O[g + 1]). */
+    P[g + 1] = perm_move[F[g] * PERMUTATIONS + P[g + 1]];
+    O[g + 1] = ori_move[F[g] * ORIENTATIONS + O[g + 1]];
+
+child:      /* record the move and go one level deeper */
+    path[g] = (uint8_t) (F[g] * 3 + T[g]);
+    /* g++ and goto enter. */
+    g++;
+    goto enter;
+
+back:       /* this node is finished: return to its parent */
+    /* If g == 0, the whole tree is done: return 0.
+     * Otherwise g-- and goto next_turn. */
+    if(g == 0){
+        return 0;
+    }
+    else {
+        g--;
+        goto next_turn;
+    }
 }
+
 
 /* Iterative deepening.  Returns the number of moves, or -1. */
 static int solve(int p, int o)
 {
     /* Try bound = h(p, o), h(p, o) + 1, ..., MAX_DEPTH.
-     * Return the first bound for which dfs(p, o, 0, bound, NO_FACE)
+     * Return the first bound for which search(p, o, bound)
      * returns 1. */
     int bound = h(p, o);
     while (bound <= MAX_DEPTH) {
-        if (dfs(p, o, 0, bound, NO_FACE)) {
+        if (search(p, o, bound)) {
             return bound;
         }
         bound++;
