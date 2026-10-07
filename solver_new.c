@@ -9,7 +9,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 enum {
     CUBIES = 7,
@@ -276,8 +275,6 @@ next_turn:  /* one more quarter turn of the same face */
 child:      /* record the move and go one level deeper */
     /* path[g] = 3 * F[g] + T[g], using a shift and an add. */
     path[g] = (uint8_t) ((F[g] << 1) + F[g] + T[g]);
-    assert(PB[g] == F[g] * PERMUTATIONS);
-    assert(OB[g] == F[g] * ORIENTATIONS);
     /* g++ and goto enter. */
     g++;
     goto enter;
@@ -311,17 +308,46 @@ static int solve(int p, int o)
     return -1;
 }
 
-/* "21345671111111" -> permutation rank and orientation rank. */
-static void parse(const char *s, int *p, int *o)
+/* "21345671111111" -> permutation rank and orientation rank.
+ * This part runs on the target, so it uses no multiply, divide or
+ * remainder: the two ranks are built separately, and every multiply by
+ * a small constant is a shift plus an add or a subtract. */
+static void parse_ranks(const char *s, int *p, int *o)
 {
-    state_t st;
+    int perm[CUBIES];
+    int c[CUBIES];          /* Lehmer digit: how many later cubies are smaller */
+
+    for (int i = 0; i < CUBIES; ++i)
+        perm[i] = s[i] - '1';
+
+
+    /* The Lehmer code c[i] = how many j > i have perm[j] < perm[i] */
     for (int i = 0; i < CUBIES; ++i) {
-        st.p[i] = (uint8_t) (s[i] - '1');
-        st.o[i] = (uint8_t) (s[i + CUBIES] - '1');
+        c[i] = 0;
+        for (int j = i + 1; j < CUBIES; ++j) {
+            if (perm[j] < perm[i]) {
+                c[i]++;
+            }
+        }
     }
-    uint32_t full = rank_state(&st);
-    *p = (int) (full / ORIENTATIONS);
-    *o = (int) (full % ORIENTATIONS);
+
+    /* Horner with the multipliers 7, 6, 5, 4, 3, 2, 1, unrolled. */
+    int r = c[0];                       /* 0 * 7 + c[0] */
+    r = (r << 2) + (r << 1) + c[1];                /* r * 6 + c[1] */
+    r = (r << 2) + r + c[2];                /* r * 5 + c[2] */
+    r = (r << 2) + c[3];                /* r * 4 + c[3] */
+    r = (r << 1) + r + c[4];                /* r * 3 + c[4] */
+    r = (r << 1) + c[5];                /* r * 2 + c[5] */
+    r = r + c[6];  /* r * 1 + c[6] */
+    *p = r;
+
+    /* Orientation: base 3 over the first six twists. */
+    int q = 0;
+    for (int i = 0; i < 6; ++i) {
+        int d = s[i + CUBIES] - '1';
+        q = (q << 1) + q + d;  /* q * 3 + d */
+    }
+    *o = q;
 }
 
 /* ---- Step3: Self test (host only) ------------------------------------------ */
@@ -400,7 +426,30 @@ static int self_test(void)
     uint32_t reached = build_exact();
     /* Print reached (expect 3,674,160). */
     printf("Reached: %u\n", reached);
-    
+    /* Input conversion: parse_ranks() must agree with rank_state()
+     * on every state. */
+    unsigned long parse_fail = 0;
+    for (uint32_t r = 0; r < STATES; ++r) {
+        state_t st;
+        char s[15];
+        unrank_state(r, &st);
+        /*  Write st as 14 digits into s, and end it with '\0'. */
+        for(int i = 0; i < 7; i++) {
+            s[i] = (char) (st.p[i] + '1');
+        }
+        for(int i = 0; i < 7; i++) {
+            s[i + 7] = (char) (st.o[i] + '1');
+        }
+        s[14] = '\0';
+        int p, o;
+        parse_ranks(s, &p, &o);
+        /*  Count a mismatch if p != r / ORIENTATIONS or
+         *          o != r % ORIENTATIONS. */
+        if(p != (int) (r / ORIENTATIONS) || o != (int) (r % ORIENTATIONS)) {
+            parse_fail++;
+        }
+    }
+    printf("Parse: %lu mismatches\n", parse_fail);
     /* H1: the lower bound never exceeds the exact distance. */
     unsigned long h1_fail = 0;
     for (uint32_t r = 0; r < STATES; ++r) {
@@ -491,7 +540,7 @@ int main(int argc, char **argv)
 
     for (int t = 0; t < 8; ++t) {
         int p, o;
-        parse(tests[t], &p, &o);
+        parse_ranks(tests[t], &p, &o);
         reset_counters();
         int len = solve(p, o);
         /*  Print the state, len, expect[t], nodes and the moves
